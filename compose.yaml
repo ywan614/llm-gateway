@@ -1,0 +1,75 @@
+name: llm-central-gateway
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [gateway]
+
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.92.0
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Run through uv run gateway-compose}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?Run through uv run gateway-compose}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?Run through uv run gateway-compose}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?Run through uv run gateway-compose}
+      MODEL_NAME: ${MODEL_NAME:?Run through uv run gateway-compose}
+      LITELLM_MODEL: ${LITELLM_MODEL:?Run through uv run gateway-compose}
+      PUBLIC_MODEL_NAME: ${PUBLIC_MODEL_NAME:?Run through uv run gateway-compose}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:?Run through uv run gateway-compose}
+      MODEL_TIMEOUT_SECONDS: ${MODEL_TIMEOUT_SECONDS:-120}
+      MODEL_MAX_RETRIES: ${MODEL_MAX_RETRIES:-1}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [gateway]
+
+  api:
+    build: .
+    user: "${HOST_UID:-10001}:${HOST_GID:-10001}"
+    restart: unless-stopped
+    command: ["sh", "-c", "alembic upgrade head && uvicorn llm_central_gateway.app:create_app --factory --host 0.0.0.0 --port 8000"]
+    volumes:
+      - ./config.ini:/app/config.ini:ro
+      - ./logs:/app/logs
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      litellm:
+        condition: service_started
+    networks: [gateway]
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./gateway/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - api
+      - litellm
+    networks: [gateway]
+
+volumes:
+  redis_data:
+
+networks:
+  gateway:
+    driver: bridge

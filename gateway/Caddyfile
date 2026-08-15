@@ -1,0 +1,18 @@
+:8080 {
+	encode zstd gzip
+
+	@control path /api/v1/*
+	handle @control {
+		reverse_proxy api:8000
+	}
+
+	@models path /v1/*
+	handle @models {
+		reverse_proxy litellm:4000 {
+			flush_interval -1
+		}
+	}
+
+	respond /health 200
+	respond 404
+}
